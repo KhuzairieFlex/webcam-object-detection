@@ -1,0 +1,78 @@
+name: Verify and deploy to Hugging Face Spaces
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify app
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install OpenCV system library
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes libgl1
+
+      - name: Check required files
+        run: |
+          test -f README.md
+          test -f app.py
+          test -f requirements.txt
+          test -f .github/workflows/deploy-huggingface.yml
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Verify imports
+        run: python -c "import gradio, ultralytics; print('Gradio', gradio.__version__); print('Ultralytics', ultralytics.__version__)"
+
+      - name: Compile Python files
+        run: python -m compileall -q app.py tests
+
+      - name: Run unit tests
+        run: python -m unittest discover -s tests -v
+
+  deploy:
+    name: Deploy to Hugging Face Spaces
+    needs: verify
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Push to Hugging Face Space
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_SPACE_ID: ${{ vars.HF_SPACE_ID }}
+        run: |
+          if [ -z "$HF_TOKEN" ]; then
+            echo "::error::Add the HF_TOKEN repository secret before deploying."
+            exit 1
+          fi
+          if ! [[ "$HF_SPACE_ID" =~ ^[^/]+/[^/]+$ ]]; then
+            echo "::error::Set the HF_SPACE_ID repository variable to username/space-name."
+            exit 1
+          fi
+          auth_header="$(printf 'user:%s' "$HF_TOKEN" | base64 -w 0)"
+          git -c "http.extraheader=AUTHORIZATION: basic ${auth_header}" \
+            push --force "https://huggingface.co/spaces/${HF_SPACE_ID}" \
+            HEAD:main
